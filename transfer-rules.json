@@ -1,0 +1,70 @@
+{
+  "rulesVersion": 1,
+  "bundleFormat": 1,
+
+  "dataDirMarkers": ["springsettings.cfg", "launcher_cfg.json", "engine", "games", "LuaUI"],
+  "gameProcesses": ["spring", "spring-headless", "spring-dedicated", "Beyond-All-Reason", "beyond-all-reason"],
+
+  "settingsFile": "springsettings.cfg",
+  "lobbyFile": "LuaMenu/Config/IGL_data.lua",
+  "lobbySection": "Chili lobby",
+  "backupDir": "settings-transfer-backup",
+
+  "plainFiles": [
+    { "path": "uikeys.txt",                          "label": "active keybinds" },
+    { "path": "LuaUI/Config/keybind_profiles.json",  "label": "keybind profiles" },
+    { "path": "LuaUI/Config/BYAR.lua",               "label": "widget settings + enabled widgets" },
+    { "path": "LuaUI/Config/blueprints.json",        "label": "blueprints" },
+    { "path": "favourite_maps.txt",                  "label": "favourite maps" }
+  ],
+
+  "machineKeys": [
+    "XResolution", "YResolution", "XResolutionWindowed", "YResolutionWindowed",
+    "WindowPosX", "WindowPosY", "WindowState", "Fullscreen", "WindowBorderless",
+    "MinimizeOnFocusLoss", "SelectedDisplay", "SelectedScreenMode",
+    "DualScreenMode", "DualScreenMiniMapOnLeft", "DualScreenMiniMapAspectRatio",
+    "BlockCompositing", "DWMFlush",
+
+    "snd_device", "SetCoreAffinity", "WorkerThreadCount", "PathingThreadCount",
+    "ThreadPinPolicy", "TextureMemPoolSize", "GLContextMajorVersion", "GLContextMinorVersion",
+    "UseHighResTimer",
+
+    "SpringData", "SpringDataRoot", "DefaultStartScript", "MenuArchive", "SplashScreenDir",
+    "FontFile", "SmallFontFile",
+    "name", "address", "FirstRun", "ChobbyLaunchesCount", "WelcomeMessagePlayed",
+    "OpenSkillSnapshotLastFetch", "OpenSkillSnapshotLastSuccessfulFetch",
+    "Version", "version", "LogFlush", "LogFlushLevel", "RotateLogFiles", "VerboseLevel",
+    "RapidTagResolutionOrder", "skirmish_gameType_choice", "skirmish_map_choice",
+    "WindowsPausedAtFrame", "KeybindingFile"
+  ],
+
+  "graphicsKeys": [
+    "graphicsPreset", "Shadows", "ShadowMapSize", "ShadowQuality", "MSAA", "MSAALevel",
+    "Water", "water", "ReflectiveWater", "BumpWaterAnisotropy", "BumpWaterBlurReflection",
+    "BumpWaterDepthBits", "BumpWaterReflection", "BumpWaterRefraction", "BumpWaterTexSizeReflection",
+    "BumpWaterDynamicWaves", "BumpWaterEndlessOcean", "BumpWaterOcclusionQuery",
+    "BumpWaterUseDepthTexture", "BumpWaterUseUniforms", "BumpWaterShoreWaves",
+    "CubeTexSizeReflection", "CubeTexSizeSpecular", "CubeTexGenerateMipMaps", "CubeTexSpecularExponent",
+    "GroundDecals", "GroundDetail", "GrassDetail", "TreeRadius", "TreeWind",
+    "MaxParticles", "MaxNanoParticles", "NanoParticlesGL4", "NanoParticleMode",
+    "AdvMapShading", "AdvModelShading", "AdvUnitShading", "NormalMapping",
+    "UnitLodDist", "LODScale", "LODScaleReflection", "LODScaleRefraction", "LODScaleShadow",
+    "FeatureDrawDistance", "FeatureFadeDistance", "HighQualityDecals", "MinSampleShadingRate",
+    "cus2", "LuaShaders", "AllowDeferredMapRendering", "AllowDeferredModelRendering",
+    "AllowCombinedMapRendering", "ui_rendertotexture", "VSync", "VSyncFraction", "VSyncGame",
+    "LimitIdleFps", "MinDrawFPS", "MinSimDrawBalance"
+  ],
+
+  "lobbyExcludedKeys": [
+    "userName", "password", "rememberPassword", "autoLogin", "myAccountID",
+    "serverAddress", "serverPort",
+    "steamLinkComplete", "suggestedNameFromSteam", "wantAuthenticateWithSteam",
+    "firstLoginEver", "firstBattleStarted", "lastStartedBattleID", "gameConfigName",
+    "game_fullscreen", "lobby_fullscreen", "agressivelySetBorderlessWindowed",
+    "multiplayerDifferentEngine", "useWrongEngine", "multiplayerLaunchNewSpring", "useSpringRestart",
+    "doNotSetAnySpringSettings", "debugMode", "enableProfiler", "enableInspector",
+    "activeDebugConsole", "campaignSpawnDebug", "editCampaign", "loadLocalWidgets",
+    "autoUpdateWidgets", "lobbyIdleSleep", "enableCacheRapidPool", "pluginsInstallDisclaimerAccepted"
+  ],
+  "lobbyExcludedPrefixes": ["window_"]
+}

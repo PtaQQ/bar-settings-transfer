@@ -84,7 +84,8 @@ player at the same seat, or the organizer, can undo it in one click.
 Never exported: lobby login name and password, account id, server address, Steam link,
 hardware fingerprint (analytics section), window positions.
 
-Never imported from `springsettings.cfg` (the target PC keeps its own):
+Never imported from `springsettings.cfg` (the target PC keeps its own; the full list is
+`machineKeys` in `transfer-rules.json`):
 
 - display: `XResolution`, `YResolution`, `XResolutionWindowed`, `YResolutionWindowed`,
   `WindowPosX`, `WindowPosY`, `WindowState`, `Fullscreen`, `WindowBorderless`,
@@ -92,8 +93,24 @@ Never imported from `springsettings.cfg` (the target PC keeps its own):
   `BlockCompositing`, `DWMFlush`
 - hardware: `snd_device`, `SetCoreAffinity`, `WorkerThreadCount`, `PathingThreadCount`,
   `ThreadPinPolicy`, `TextureMemPoolSize`, `GLContext*`, `UseHighResTimer`
-- paths, identity, bookkeeping: `SpringData`, `name`, `address`, `FirstRun`,
-  `ChobbyLaunchesCount`, `OpenSkillSnapshot*`, `Version`, log settings, skirmish picks
+- paths, identity, bookkeeping: `SpringData`, `FontFile`, `SmallFontFile`, `name`,
+  `address`, `FirstRun`, `ChobbyLaunchesCount`, `OpenSkillSnapshot*`, `Version`, log
+  settings, skirmish picks
+- `KeybindingFile` is set by the import itself, pointing at the keybind file that came
+  with the bundle.
+
+## What an import will not do
+
+A settings zip is treated as untrusted input, since players pass them around:
+
+- Only the files listed above are read out of a zip. Anything else, such as a widget
+  `.lua` file or a path with `..` in it, is ignored and reported, never written.
+- Config lines must be a plain identifier key with a single-line value; malformed lines
+  are dropped.
+- Lobby values must be Lua literals (`true`, `false`, a number or a quoted string),
+  because the lobby runs its config file as Lua. Anything else is dropped.
+- Zips over 64 MB, or files inside them over 32 MB, are refused.
+- Text from the zip is echoed with control characters removed.
 
 Widget positions inside `BYAR.lua` are safe across resolutions: BAR widgets store them as
 screen fractions or re-scale them from the stored screen size on load.
@@ -135,3 +152,9 @@ Not covered: replays, saves, chat logs, cache, launcher config.
 | `*.bat` | Windows one-click launchers |
 | `bar-settings-transfer.py` | Linux / macOS implementation (Python 3, stdlib only); same zip format |
 | `*.sh` | Linux one-click launchers |
+| `transfer-rules.json` | what travels and what stays, shared by both implementations; must sit next to the scripts |
+| `tests/` | end-to-end tests: both implementations, cross-OS bundles, a hostile bundle (`python -m unittest discover -s tests`) |
+
+To change what travels, edit `transfer-rules.json` only, then run the tests. CI runs them
+on Windows (both implementations) and Ubuntu.
+| `tools/build_release.py` | builds the two release zips: `python tools/build_release.py v1.1.0 dist` |
