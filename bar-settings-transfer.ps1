@@ -77,7 +77,9 @@ $GraphicsKeys = @(
 # Lobby ("Chili lobby" block of LuaMenu/Config/IGL_data.lua) keys that stay home:
 # credentials, server, window geometry, developer switches.
 $LobbyExcludedKeys = @(
-	"password", "rememberPassword", "autoLogin", "myAccountID", "serverAddress", "serverPort",
+	# userName stays home too: a fresh install has autoLogin on, and a name without a
+	# password makes the lobby attempt a login and error out.
+	"userName", "password", "rememberPassword", "autoLogin", "myAccountID", "serverAddress", "serverPort",
 	"steamLinkComplete", "suggestedNameFromSteam", "wantAuthenticateWithSteam",
 	"firstLoginEver", "firstBattleStarted", "lastStartedBattleID", "gameConfigName",
 	"game_fullscreen", "lobby_fullscreen", "agressivelySetBorderlessWindowed",

@@ -2,8 +2,20 @@
 
 Move a player's Beyond All Reason settings and keybinds from their home PC to another PC
 (LAN event machine) without breaking that machine's screen resolution, display mode or
-sound device. Windows only. Nothing to install: one PowerShell script, three double-click
-`.bat` files.
+sound device. Windows and Linux. Nothing to install.
+
+**Download:** grab the zip for your OS from the
+[Releases page](https://github.com/PtaQQ/bar-settings-transfer/releases), unzip it anywhere
+(Desktop, USB stick), double-click the EXPORT / IMPORT file.
+
+- Windows: `EXPORT BAR settings.bat`, `IMPORT BAR settings.bat`, `RESTORE BAR settings.bat`
+  (PowerShell 5.1, ships with Windows 10/11).
+- Linux / Steam Deck desktop mode: `EXPORT-BAR-settings.sh`, `IMPORT-BAR-settings.sh`,
+  `RESTORE-BAR-settings.sh` (needs `python3`, present on every mainstream distro).
+  If a double-click only opens the file in an editor, right-click > Run, or run it from a
+  terminal.
+
+A zip exported on Windows imports on Linux and the other way round.
 
 ## For players (home PC)
 
@@ -43,13 +55,17 @@ player at the same seat, or the organizer, can undo it in one click.
   Or edit `IMPORT BAR settings.bat` and append ` -KeepLocalGraphics` to its powershell line
   before copying it to the sticks.
 - Scripted use (no prompts): `-NoPrompt -DataDir <path\to\data> -Bundle <zip>`.
+  Linux equivalents: `python3 bar-settings-transfer.py import --keep-local-graphics`,
+  `--no-prompt --data-dir <dir> --bundle <zip>`.
 - The tool refuses to run while `spring.exe` or the launcher is running. Close them; the
   engine rewrites `springsettings.cfg` on exit and would clobber the import otherwise.
 - Every import writes a backup to `data\settings-transfer-backup\<timestamp>\`.
 - The tool finds the game at the installer default
-  (`%LOCALAPPDATA%\Programs\Beyond-All-Reason\data`), via the registry uninstall entry, or
-  next to itself if you drop it inside the install folder. Anything else and it opens a
-  folder picker asking for the `data` folder.
+  (Windows: `%LOCALAPPDATA%\Programs\Beyond-All-Reason\data`, also via the registry
+  uninstall entry; Linux: `~/.local/state/Beyond All Reason`, or `~/Documents/Beyond All
+  Reason` on older installs), or next to itself if you drop it inside the install folder.
+  Anything else and it asks for the `data` folder (folder picker on Windows, typed path on
+  Linux).
 
 ## What is in the zip
 
@@ -61,12 +77,12 @@ player at the same seat, or the organizer, can undo it in one click.
 | `LuaUI/Config/BYAR.lua` | every widget's saved state and which widgets are enabled / disabled | copied |
 | `LuaUI/Config/blueprints.json` | the player's blueprints | copied |
 | `favourite_maps.txt` | lobby favourite maps | copied |
-| `lobby_settings.txt` | lobby preferences (language, chat font, menu volume, filters, login name) | merged into `LuaMenu/Config/IGL_data.lua` |
+| `lobby_settings.txt` | lobby preferences (language, chat font, menu volume, filters) | merged into `LuaMenu/Config/IGL_data.lua` |
 | `manifest.txt` | who exported it, when, from what resolution | shown on import |
 | a custom bind file | only when `KeybindingFile` points at a file other than `uikeys.txt` | copied, key kept |
 
-Never exported: lobby password, account id, server address, Steam link, hardware
-fingerprint (analytics section), window positions.
+Never exported: lobby login name and password, account id, server address, Steam link,
+hardware fingerprint (analytics section), window positions.
 
 Never imported from `springsettings.cfg` (the target PC keeps its own):
 
@@ -105,6 +121,17 @@ All paths relative to the launcher's `data` folder:
 | `favourite_maps.txt` | Chobby | favourite maps |
 | `chobby_config.json`, `launcher_cfg.json`, `config.json` | launcher | server address and setup; not a player setting |
 
-Not covered: Linux installs (same files, same layout, `~/.local/state/Beyond-All-Reason`
-or the install's `data`; the merge logic is identical if someone ports the script),
-replays, saves, chat logs, cache.
+On Linux the launcher (AppImage) keeps the same layout under `~/.local/state/Beyond All
+Reason` (`$XDG_STATE_HOME` honoured; older installs used `~/Documents/Beyond All Reason`).
+Verified against a fresh AppImage install under WSL2 / Ubuntu 24.04 with Recoil 2026.07.04.
+
+Not covered: replays, saves, chat logs, cache, launcher config.
+
+## Files in this repo
+
+| File | Role |
+|---|---|
+| `bar-settings-transfer.ps1` | Windows implementation (PowerShell 5.1) |
+| `*.bat` | Windows one-click launchers |
+| `bar-settings-transfer.py` | Linux / macOS implementation (Python 3, stdlib only); same zip format |
+| `*.sh` | Linux one-click launchers |
