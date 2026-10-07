@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BAR Settings Transfer, Linux / macOS implementation (Python 3.6+, standard library only).
+"""BAR Settings Transfer, Linux / macOS implementation (Python 3.7+, standard library only).
 
 Exports a player's Beyond All Reason settings into one zip and imports such a zip into
 another install while leaving that machine's display and hardware settings alone.
@@ -46,13 +46,17 @@ CFG_LINE_RE = re.compile(r"^\s*([^=\s#;][^=]*?)\s*=\s*(.*?)\s*$")
 # Lobby config (table.save output): only identifier keys with literal values may be written,
 # because the file is executed as Lua by the lobby.
 LOBBY_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-LOBBY_VALUE_RE = re.compile(r'^(?:true|false|-?\d{1,15}(?:\.\d{1,15})?|"(?:[^"\\\x00-\x1f]|\\[\\"nrt])*")$')
+LOBBY_VALUE_RE = re.compile(r'^(?:true|false|-?\d{1,20}(?:\.\d{1,20})?(?:[eE][-+]?\d{1,3})?|"(?:[^"\\\x00-\x1f]|\\[\\"nrt])*")$')
 LOBBY_SCALAR_RE = re.compile(r'^\t\t(?:\["([^"]+)"\]|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*(.*?),\s*$')
 
 # A custom keybind file named by KeybindingFile: a plain file name in the data dir root.
 BIND_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.txt$")
 
 PRINTABLE_RE = re.compile(r"[^\x20-\x7e]")
+
+# Written into each backup folder: files that did not exist before the import, so restore
+# can remove them again.
+CREATED_LIST_NAME = "created-by-import.txt"
 
 
 class TransferError(Exception):
@@ -291,6 +295,16 @@ def merge_lobby_scalars(text, section, values):
 # Bundle (the zip)
 # ---------------------------------------------------------------------------
 
+def read_zip_entry(z, info, rel):
+    """Decompress one entry, stopping past the size cap. The sizes in the zip's headers are
+    written by whoever made the zip, so they are not trusted."""
+    with z.open(info) as f:
+        data = f.read(MAX_ENTRY_BYTES + 1)
+    if len(data) > MAX_ENTRY_BYTES:
+        raise TransferError("'%s' inside the zip is far too large for a settings file" % sanitized(rel))
+    return data
+
+
 class Bundle:
     """Files of a settings bundle, held in memory: {relative path: bytes}."""
 
@@ -330,12 +344,11 @@ class Bundle:
                 if not safe_relative_path(rel) or rel not in allowed:
                     bundle.skipped.append(rel)
                     continue
-                if info.file_size > MAX_ENTRY_BYTES:
-                    raise TransferError("'%s' inside the zip is far too large for a settings file" % sanitized(rel))
-                total += info.file_size
+                data = read_zip_entry(z, info, rel)
+                total += len(data)
                 if total > MAX_BUNDLE_BYTES:
                     raise TransferError("the zip is far too large for a settings bundle")
-                bundle.add(rel, z.read(info))
+                bundle.add(rel, data)
         if MANIFEST_NAME not in bundle.files:
             raise TransferError("that zip was not made by BAR Settings Transfer (no %s inside)" % MANIFEST_NAME)
         return bundle
@@ -344,8 +357,9 @@ class Bundle:
     def _custom_bind_name(z, infos, settings_file):
         """The custom keybind file the bundle's config points at, if it names a sane file."""
         for info in infos:
-            if info.filename.replace("\\", "/") == settings_file and info.file_size <= MAX_ENTRY_BYTES:
-                value = cfg_get(parse_cfg(z.read(info).decode("utf-8", errors="replace")), "KeybindingFile")
+            if info.filename.replace("\\", "/") == settings_file:
+                text = read_zip_entry(z, info, settings_file).decode("utf-8", errors="replace")
+                value = cfg_get(parse_cfg(text), "KeybindingFile")
                 if value and value != "uikeys.txt" and BIND_FILE_RE.match(value):
                     return value
         return None
@@ -359,19 +373,38 @@ def script_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def linux_process_names(pid):
+    """Names a process may be known by: argv[0] and the kernel's comm. comm is cut to 15
+    characters (the launcher shows up as "beyond-all-reas"), so argv[0] is checked first."""
+    found = []
+    try:
+        with open("/proc/%s/cmdline" % pid, "rb") as f:
+            argv0 = f.read().split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        if argv0:
+            found.append(os.path.basename(argv0))
+    except OSError:
+        pass
+    try:
+        with open("/proc/%s/comm" % pid) as f:
+            found.append(f.read().strip())
+    except OSError:
+        pass
+    return found
+
+
+def matches_game(name, names):
+    if name in names or name.lower().startswith("beyond-all-reason"):
+        return True
+    # A 15-character comm still identifies a longer process name.
+    return len(name) == 15 and any(n.startswith(name) for n in names)
+
+
 def game_running(rules):
     """True when the engine or the launcher is running."""
     names = rules.game_processes
     if os.path.isdir("/proc"):
         for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            try:
-                with open("/proc/%s/comm" % pid) as f:
-                    comm = f.read().strip()
-            except OSError:
-                continue
-            if comm in names or comm.lower().startswith("beyond-all-reason"):
+            if pid.isdigit() and any(matches_game(n, names) for n in linux_process_names(pid)):
                 return True
         return False
     try:
@@ -396,10 +429,12 @@ def find_data_dir(given, rules, console):
     home = os.path.expanduser("~")
     here = script_dir()
     state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    documents = xdg_user_dir("DOCUMENTS", os.path.join(home, "Documents"))
     candidates = [
-        # spring-launcher on Linux: $XDG_STATE_HOME/<title>; older installs under ~/Documents/<title>
+        # Same order as spring-launcher's src/write_path.js on Linux: an existing
+        # <documents>/<title> from older installs wins, then $XDG_STATE_HOME/<title>.
+        os.path.join(documents, "Beyond All Reason"),
         os.path.join(state_home, "Beyond All Reason"),
-        os.path.join(home, "Documents", "Beyond All Reason"),
         os.path.join(home, ".var", "app", "info.beyondallreason.bar", "data", "Beyond All Reason"),
         # the tool sits inside or next to an install
         os.path.join(here, "data"),
@@ -423,15 +458,26 @@ def find_data_dir(given, rules, console):
     raise TransferError("'%s' does not look like the BAR data folder." % typed)
 
 
-def desktop_dir():
+def xdg_user_dir(name, default):
+    """A folder from user-dirs.dirs (XDG_<name>_DIR), the way Electron resolves it."""
     home = os.path.expanduser("~")
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     try:
-        out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True)
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
+        with open(os.path.join(config, "user-dirs.dirs"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r'^\s*XDG_%s_DIR\s*=\s*"(.*)"\s*$' % name, line)
+                if m:
+                    value = m.group(1).replace("$HOME", home)
+                    if os.path.isabs(value) and os.path.normpath(value) != os.path.normpath(home):
+                        return value
     except OSError:
         pass
-    desktop = os.path.join(home, "Desktop")
+    return default
+
+
+def desktop_dir():
+    home = os.path.expanduser("~")
+    desktop = xdg_user_dir("DESKTOP", os.path.join(home, "Desktop"))
     return desktop if os.path.isdir(desktop) else home
 
 
@@ -505,9 +551,19 @@ def read_bytes(path):
 
 
 def write_bytes(path, data):
+    """Write via a temp file in the same folder and rename it into place, so a crash or a
+    full disk never leaves a half-written config behind."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
+    tmp = path + ".transfer-tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def copy_into(src, dst):
@@ -517,6 +573,16 @@ def copy_into(src, dst):
 
 def stamp():
     return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def new_backup_dir(root):
+    """A fresh folder per import; a second import in the same second gets a suffix."""
+    base = os.path.join(root, stamp())
+    path, n = base, 2
+    while os.path.exists(path):
+        path, n = "%s-%d" % (base, n), n + 1
+    os.makedirs(path)
+    return path
 
 
 def require_game_closed(rules, opts, what):
@@ -559,11 +625,14 @@ def export_settings(opts, rules, console):
     lobby_path = os.path.join(data, rules.lobby_file)
     if os.path.isfile(lobby_path):
         scalars = read_lobby_scalars(read_text(lobby_path), rules.lobby_section)
-        kept = ["%s = %s" % (k, v) for k, v in scalars.items()
-                if rules.lobby_key_allowed(k) and valid_lobby_pair(k, v)]
+        allowed = [(k, v) for k, v in scalars.items() if rules.lobby_key_allowed(k)]
+        kept = ["%s = %s" % (k, v) for k, v in allowed if valid_lobby_pair(k, v)]
+        unreadable = [k for k, v in allowed if not valid_lobby_pair(k, v)]
         if kept:
             bundle.add_text(LOBBY_EXPORT_NAME, kept)
             included.append("%s  (%d lobby preferences, no login details)" % (LOBBY_EXPORT_NAME, len(kept)))
+        if unreadable:
+            console.say("  skipped lobby preferences this tool cannot copy safely: " + ", ".join(unreadable))
 
     bundle.add_text(MANIFEST_NAME, [
         "tool = BAR Settings Transfer %s (python)" % TOOL_VERSION,
@@ -605,14 +674,18 @@ def import_settings(opts, rules, console):
         console.say("  ignored '%s' (not a settings file)" % sanitized(rel))
 
     # Back up every file this import may replace.
-    backup = os.path.join(data, rules.backup_dir, stamp())
+    backup = new_backup_dir(os.path.join(data, rules.backup_dir))
     targets = [rules.settings_file, rules.lobby_file] + [r for r in bundle.files if r not in (MANIFEST_NAME, LOBBY_EXPORT_NAME)]
     backed_up = 0
+    created = []
     for rel in OrderedDict.fromkeys(targets):
         src = os.path.join(data, rel)
         if os.path.isfile(src):
             copy_into(src, os.path.join(backup, rel))
             backed_up += 1
+        else:
+            created.append(rel)
+    write_bytes(os.path.join(backup, CREATED_LIST_NAME), ("\n".join(created) + "\n").encode("utf-8"))
     console.say("  Backed up %d current file(s) to %s" % (backed_up, backup))
 
     # 1. Engine config: merge, keeping this machine's own keys.
@@ -633,8 +706,10 @@ def import_settings(opts, rules, console):
         else:
             cfg_set(local, line.key, line.value)
             applied += 1
-    # The lobby pushes its default settings table over the config at the first battle start
-    # on a fresh install; mark that as done so the import survives.
+    # On a fresh install the lobby pushes its own default settings over this file the first
+    # time a battle starts, while FirstRun is 1 (BYAR-Chobby, LuaMenu/widgets/
+    # gui_settings_window.lua, the OnBattleAboutToStart listener). Mark that as done so the
+    # imported settings survive the first game.
     cfg_set(local, "FirstRun", "0")
     bind_file = cfg_get(incoming, "KeybindingFile")
     if bind_file and bind_file != "uikeys.txt" and BIND_FILE_RE.match(bind_file) and bind_file in bundle.files:
@@ -677,7 +752,7 @@ def import_settings(opts, rules, console):
             console.say("  lobby preferences skipped: " + str(e))
 
     console.big("DONE. Start Beyond All Reason; your settings and keybinds are in place.")
-    console.say("  Changed your mind? Run RESTORE to put back the %d file(s) from before this import." % backed_up)
+    console.say("  Changed your mind? Run RESTORE to put this install back the way it was before this import.")
 
 
 def restore_settings(opts, rules, console):
@@ -699,11 +774,22 @@ def restore_settings(opts, rules, console):
     for r, _dirs, files in os.walk(src_root):
         for name in files:
             full = os.path.join(r, name)
-            rel = os.path.relpath(full, src_root)
-            copy_into(full, os.path.join(data, rel))
+            rel = os.path.relpath(full, src_root).replace(os.sep, "/")
+            if rel == CREATED_LIST_NAME:
+                continue
+            write_bytes(os.path.join(data, rel), read_bytes(full))
             console.say("  restored " + rel)
             count += 1
-    console.big("DONE. %d file(s) restored." % count)
+    removed = 0
+    created_list = os.path.join(src_root, CREATED_LIST_NAME)
+    if os.path.isfile(created_list):
+        for rel in read_text(created_list).splitlines():
+            target = os.path.join(data, rel)
+            if safe_relative_path(rel) and os.path.isfile(target):
+                os.remove(target)
+                console.say("  removed " + rel + " (the import added it)")
+                removed += 1
+    console.big("DONE. %d file(s) restored, %d removed." % (count, removed))
 
 
 # ---------------------------------------------------------------------------

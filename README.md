@@ -11,7 +11,7 @@ sound device. Windows and Linux. Nothing to install.
 - Windows: `EXPORT BAR settings.bat`, `IMPORT BAR settings.bat`, `RESTORE BAR settings.bat`
   (PowerShell 5.1, ships with Windows 10/11).
 - Linux / Steam Deck desktop mode: `EXPORT-BAR-settings.sh`, `IMPORT-BAR-settings.sh`,
-  `RESTORE-BAR-settings.sh` (needs `python3`, present on every mainstream distro).
+  `RESTORE-BAR-settings.sh` (needs `python3` 3.7 or newer, present on every mainstream distro).
   If a double-click only opens the file in an editor, right-click > Run, or run it from a
   terminal.
 
@@ -34,13 +34,14 @@ A zip exported on Windows imports on Linux and the other way round.
    several, opens a file picker if there are none).
 4. Start the game. Done.
 
-`RESTORE BAR settings.bat` puts back everything from before the last import, so the next
-player at the same seat, or the organizer, can undo it in one click.
+`RESTORE BAR settings.bat` puts the PC back exactly as it was before the last import:
+replaced files come back and files the import added are removed. The next player at the
+same seat, or the organizer, can undo an import in one click.
 
 ## For organizers
 
-- Drop the four files from this folder on every USB stick / on every machine's Desktop.
-  They need nothing else.
+- Unzip the whole download onto every USB stick or every machine's Desktop. Keep all the
+  files together; they need nothing else.
 - The event machine's resolution, fullscreen mode, monitor choice, sound device and
   thread settings are never overwritten. The lobby re-applies the window mode on every
   launch anyway.
@@ -59,7 +60,9 @@ player at the same seat, or the organizer, can undo it in one click.
   `--no-prompt --data-dir <dir> --bundle <zip>`.
 - The tool refuses to run while `spring.exe` or the launcher is running. Close them; the
   engine rewrites `springsettings.cfg` on exit and would clobber the import otherwise.
-- Every import writes a backup to `data\settings-transfer-backup\<timestamp>\`.
+- Every import writes a backup to `data\settings-transfer-backup\<timestamp>\`, including
+  a list of files the import added. Files are written through a temporary file and
+  renamed into place, so an interrupted import never leaves a half-written config.
 - The tool finds the game at the installer default
   (Windows: `%LOCALAPPDATA%\Programs\Beyond-All-Reason\data`, also via the registry
   uninstall entry; Linux: `~/.local/state/Beyond All Reason`, or `~/Documents/Beyond All
@@ -150,11 +153,15 @@ Not covered: replays, saves, chat logs, cache, launcher config.
 |---|---|
 | `bar-settings-transfer.ps1` | Windows implementation (PowerShell 5.1) |
 | `*.bat` | Windows one-click launchers |
-| `bar-settings-transfer.py` | Linux / macOS implementation (Python 3, stdlib only); same zip format |
+| `bar-settings-transfer.py` | Linux / macOS implementation (Python 3.7+, stdlib only); same zip format |
 | `*.sh` | Linux one-click launchers |
 | `transfer-rules.json` | what travels and what stays, shared by both implementations; must sit next to the scripts |
 | `tests/` | end-to-end tests: both implementations, cross-OS bundles, a hostile bundle (`python -m unittest discover -s tests`) |
+| `tools/build_release.py` | builds the two release zips reproducibly: `python tools/build_release.py v1.2.0 dist` |
+| `RELEASE_NOTES.md` | player-facing notes used for the next release |
 
 To change what travels, edit `transfer-rules.json` only, then run the tests. CI runs them
 on Windows (both implementations) and Ubuntu.
-| `tools/build_release.py` | builds the two release zips: `python tools/build_release.py v1.1.0 dist` |
+
+To release, update `RELEASE_NOTES.md` and push a tag such as `v1.2.0`. CI runs the tests
+on both OSes, builds the zips and publishes the GitHub release.

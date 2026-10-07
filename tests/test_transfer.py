@@ -60,6 +60,7 @@ return {
 \t\tchatFontSize = 21,
 \t\tlanguage = "de",
 \t\tmenuMusicVolume = 0,
+\t\tmenuNotificationVolume = 9.9999997e-05,
 \t\tpassword = "hunter2",
 \t\trememberPassword = true,
 \t\tuserName = "HomePlayer",
@@ -93,23 +94,28 @@ def implementations():
     return impls
 
 
-def run_tool(cmd, mode, data_dir, bundle=None, out_dir=None, extra=()):
+def run_tool(cmd, mode, data_dir, bundle=None, out_dir=None, extra=(), env=None):
+    """data_dir=None leaves the data folder to the tool's own detection."""
     py = cmd[1] == PY_TOOL
     args = list(cmd)
     if py:
-        args += [mode, "--data-dir", data_dir, "--no-prompt", "--force"]
+        args += [mode, "--no-prompt", "--force"]
+        if data_dir:
+            args += ["--data-dir", data_dir]
         if bundle:
             args += ["--bundle", bundle]
         if out_dir:
             args += ["--out-dir", out_dir]
     else:
-        args += ["-Mode", mode, "-DataDir", data_dir, "-NoPrompt", "-Force"]
+        args += ["-Mode", mode, "-NoPrompt", "-Force"]
+        if data_dir:
+            args += ["-DataDir", data_dir]
         if bundle:
             args += ["-Bundle", bundle]
         if out_dir:
             args += ["-OutDir", out_dir]
     args += [a if py else {"--keep-local-graphics": "-KeepLocalGraphics"}[a] for a in extra]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=120, env=env)
     return result.returncode, result.stdout + result.stderr
 
 
@@ -207,6 +213,7 @@ class TransferTests(unittest.TestCase):
                     self.assertTrue(os.path.isfile(os.path.join(self.fx.lan, "uikeys.txt")))
                     lobby = read(os.path.join(self.fx.lan, "LuaMenu", "Config", "IGL_data.lua"))
                     self.assertIn('\t\tlanguage = "de",', lobby)
+                    self.assertIn("\t\tmenuNotificationVolume = 9.9999997e-05,", lobby)
                     self.assertNotIn("hunter2", lobby)
 
     def test_keep_local_graphics(self):
@@ -248,6 +255,42 @@ class TransferTests(unittest.TestCase):
                 code, out = run_tool(impl, "restore", self.fx.lan)
                 self.assertEqual(code, 0, out)
                 self.assertEqual(cfg_dict(os.path.join(self.fx.lan, "springsettings.cfg"))["FirstRun"], "1")
+                # Files the import added are removed again, not left behind.
+                for rel in ("uikeys.txt", "LuaUI/Config/BYAR.lua", "LuaMenu/Config/IGL_data.lua"):
+                    self.assertFalse(os.path.exists(os.path.join(self.fx.lan, rel)), rel + "\n" + out)
+                leftovers = [f for _r, _d, fs in os.walk(self.fx.lan) for f in fs if f.endswith(".transfer-tmp")]
+                self.assertEqual(leftovers, [])
+
+    def test_quick_repeat_imports_keep_separate_backups(self):
+        for name, impl in implementations():
+            with self.subTest(impl=name):
+                self.fx.cleanup()
+                self.fx = Fixture()
+                zpath = self.export(impl)
+                self.assertEqual(run_tool(impl, "import", self.fx.lan, bundle=zpath)[0], 0)
+                self.assertEqual(run_tool(impl, "import", self.fx.lan, bundle=zpath)[0], 0)
+                backups = os.listdir(os.path.join(self.fx.lan, "settings-transfer-backup"))
+                self.assertEqual(len(backups), 2, backups)
+
+    @unittest.skipIf(os.name == "nt", "the launcher only uses this lookup on Linux")
+    def test_linux_data_dir_follows_launcher_order(self):
+        home = os.path.join(self.fx.root, "fakehome")
+        documents = os.path.join(home, "Documents", "Beyond All Reason")
+        state = os.path.join(home, ".local", "state", "Beyond All Reason")
+        write(os.path.join(documents, "springsettings.cfg"), HOME_CFG)
+        write(os.path.join(state, "springsettings.cfg"), HOME_CFG)
+        env = dict(os.environ, HOME=home)
+        for key in ("XDG_STATE_HOME", "XDG_CONFIG_HOME"):
+            env.pop(key, None)
+        py = [sys.executable, PY_TOOL]
+        code, out = run_tool(py, "export", None, out_dir=self.fx.out, env=env)
+        self.assertEqual(code, 0, out)
+        self.assertIn("from: " + documents, out)
+        shutil.rmtree(documents)
+        shutil.rmtree(self.fx.out)
+        code, out = run_tool(py, "export", None, out_dir=self.fx.out, env=env)
+        self.assertEqual(code, 0, out)
+        self.assertIn("from: " + state, out)
 
     def test_hostile_bundle_is_contained(self):
         for name, impl in implementations():

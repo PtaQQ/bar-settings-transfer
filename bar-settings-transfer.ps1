@@ -50,13 +50,17 @@ $script:CfgLineRe = '^\s*([^=\s#;][^=]*?)\s*=\s*(.*?)\s*$'
 # Lobby config (table.save output): only identifier keys with literal values may be written,
 # because the file is executed as Lua by the lobby.
 $script:LobbyKeyRe = '^[A-Za-z_][A-Za-z0-9_]{0,63}$'
-$script:LobbyValueRe = '^(?:true|false|-?\d{1,15}(?:\.\d{1,15})?|"(?:[^"\\\x00-\x1f]|\\[\\"nrt])*")$'
+$script:LobbyValueRe = '^(?:true|false|-?\d{1,20}(?:\.\d{1,20})?(?:[eE][-+]?\d{1,3})?|"(?:[^"\\\x00-\x1f]|\\[\\"nrt])*")$'
 $script:LobbyScalarRe = '^\t\t(?:\["([^"]+)"\]|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*(.*?),\s*$'
 
 # A custom keybind file named by KeybindingFile: a plain file name in the data dir root.
 $script:BindFileRe = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.txt$'
 
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
+
+# Written into each backup folder: files that did not exist before the import, so restore
+# can remove them again.
+$script:CreatedListName = "created-by-import.txt"
 
 class TransferError : System.Exception {
 	TransferError([string]$message) : base($message) {}
@@ -299,10 +303,18 @@ function Write-Bundle($bundle, $path) {
 }
 
 function Read-ZipEntryBytes($entry) {
+	# Decompress one entry, stopping past the size cap. The sizes in the zip's headers are
+	# written by whoever made the zip, so they are not trusted.
 	$stream = $entry.Open()
 	try {
 		$ms = New-Object System.IO.MemoryStream
-		$stream.CopyTo($ms)
+		$buffer = New-Object byte[] 65536
+		while (($n = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+			$ms.Write($buffer, 0, $n)
+			if ($ms.Length -gt $script:MaxEntryBytes) {
+				throw [TransferError]::new("'" + (Get-Sanitized $entry.FullName) + "' inside the zip is far too large for a settings file")
+			}
+		}
 		return ,$ms.ToArray()
 	} finally { $stream.Dispose() }
 }
@@ -310,7 +322,7 @@ function Read-ZipEntryBytes($entry) {
 function Get-CustomBindName($zip, $settingsFile) {
 	# The custom keybind file the bundle's config points at, if it names a sane file.
 	foreach ($entry in $zip.Entries) {
-		if ($entry.FullName.Replace("\", "/") -eq $settingsFile -and $entry.Length -le $script:MaxEntryBytes) {
+		if ($entry.FullName.Replace("\", "/") -eq $settingsFile) {
 			$cfg = ConvertFrom-CfgText ($script:Utf8.GetString((Read-ZipEntryBytes $entry)))
 			$value = Get-CfgValue $cfg "KeybindingFile"
 			if ($value -and $value -ne "uikeys.txt" -and (Test-Re $value $script:BindFileRe)) { return $value }
@@ -333,10 +345,10 @@ function Read-Bundle($path, $rules) {
 			$rel = $entry.FullName.Replace("\", "/")
 			if ($rel.EndsWith("/")) { continue }
 			if (-not (Test-SafeRelativePath $rel) -or -not $allowed.Contains($rel)) { $bundle.Skipped.Add($rel); continue }
-			if ($entry.Length -gt $script:MaxEntryBytes) { throw [TransferError]::new("'" + (Get-Sanitized $rel) + "' inside the zip is far too large for a settings file") }
-			$total += $entry.Length
+			$bytes = Read-ZipEntryBytes $entry
+			$total += $bytes.Length
 			if ($total -gt $script:MaxBundleBytes) { throw [TransferError]::new("the zip is far too large for a settings bundle") }
-			$bundle.Files[$rel] = Read-ZipEntryBytes $entry
+			$bundle.Files[$rel] = $bytes
 		}
 	} finally { $zip.Dispose() }
 	if (-not $bundle.Files.Contains($script:ManifestName)) {
@@ -451,9 +463,19 @@ function Find-Bundle($given) {
 function Read-TextFile($path) { return [System.IO.File]::ReadAllText($path) }
 
 function Write-BytesFile($path, [byte[]]$bytes) {
+	# Write via a temp file in the same folder and swap it into place, so a crash or a full
+	# disk never leaves a half-written config behind.
 	$dir = Split-Path $path -Parent
 	if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-	[System.IO.File]::WriteAllBytes($path, $bytes)
+	$tmp = $path + ".transfer-tmp"
+	try {
+		$fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+		try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
+		if (Test-Path -LiteralPath $path -PathType Leaf) { [System.IO.File]::Replace($tmp, $path, [NullString]::Value) }
+		else { [System.IO.File]::Move($tmp, $path) }
+	} finally {
+		if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+	}
 }
 
 function Copy-Into($src, $dst) {
@@ -463,6 +485,16 @@ function Copy-Into($src, $dst) {
 }
 
 function Get-Stamp { return (Get-Date).ToString("yyyy-MM-dd_HH-mm-ss") }
+
+function New-BackupDir($root) {
+	# A fresh folder per import; a second import in the same second gets a suffix.
+	$base = Join-Path $root (Get-Stamp)
+	$path = $base
+	$n = 2
+	while (Test-Path -LiteralPath $path) { $path = "$base-$n"; $n++ }
+	New-Item -ItemType Directory -Path $path -Force | Out-Null
+	return $path
+}
 
 function Assert-GameClosed($rules, $what) {
 	if ((Test-GameRunning $rules) -and -not $Force) {
@@ -511,9 +543,12 @@ function Export-Settings($rules) {
 	if (Test-Path -LiteralPath $lobbyPath -PathType Leaf) {
 		$scalars = Read-LobbyScalars (Read-TextFile $lobbyPath) $rules.LobbySection
 		$kept = New-Object System.Collections.Generic.List[string]
+		$unreadable = New-Object System.Collections.Generic.List[string]
 		foreach ($k in $scalars.Keys) {
-			if ((Test-LobbyKeyAllowed $rules $k) -and (Test-LobbyPair $k $scalars[$k])) { $kept.Add($k + " = " + $scalars[$k]) }
+			if (-not (Test-LobbyKeyAllowed $rules $k)) { continue }
+			if (Test-LobbyPair $k $scalars[$k]) { $kept.Add($k + " = " + $scalars[$k]) } else { $unreadable.Add($k) }
 		}
+		if ($unreadable.Count -gt 0) { Say ("  skipped lobby preferences this tool cannot copy safely: " + ($unreadable -join ", ")) "Yellow" }
 		if ($kept.Count -gt 0) {
 			Add-BundleText $bundle $script:LobbyExportName $kept
 			$included.Add($script:LobbyExportName + "  (" + $kept.Count + " lobby preferences, no login details)")
@@ -559,15 +594,18 @@ function Import-Settings($rules) {
 	foreach ($rel in $bundle.Skipped) { Say ("  ignored '" + (Get-Sanitized $rel) + "' (not a settings file)") "Yellow" }
 
 	# Back up every file this import may replace.
-	$backup = Join-Path (Join-Path $data $rules.BackupDir) (Get-Stamp)
+	$backup = New-BackupDir (Join-Path $data $rules.BackupDir)
 	$targets = New-Object System.Collections.Generic.List[string]
 	$targets.Add($rules.SettingsFile); $targets.Add($rules.LobbyFile)
 	foreach ($rel in $bundle.Files.Keys) { if ($rel -notin @($script:ManifestName, $script:LobbyExportName) -and -not $targets.Contains($rel)) { $targets.Add($rel) } }
 	$backedUp = 0
+	$created = New-Object System.Collections.Generic.List[string]
 	foreach ($rel in $targets) {
 		$src = Join-Path $data $rel
 		if (Test-Path -LiteralPath $src -PathType Leaf) { Copy-Into $src (Join-Path $backup $rel); $backedUp++ }
+		else { $created.Add($rel) }
 	}
+	Write-BytesFile (Join-Path $backup $script:CreatedListName) $script:Utf8.GetBytes((@($created) -join "`n") + "`n")
 	Say ("  Backed up " + $backedUp + " current file(s) to " + $backup) "DarkGray"
 
 	# 1. Engine config: merge, keeping this machine's own keys.
@@ -583,8 +621,10 @@ function Import-Settings($rules) {
 		elseif (-not (Test-CfgPair $l.key $l.value)) { $rejected++ }
 		else { Set-CfgValue $local $l.key $l.value; $applied++ }
 	}
-	# The lobby pushes its default settings table over the config at the first battle start
-	# on a fresh install; mark that as done so the import survives.
+	# On a fresh install the lobby pushes its own default settings over this file the first
+	# time a battle starts, while FirstRun is 1 (BYAR-Chobby, LuaMenu/widgets/
+	# gui_settings_window.lua, the OnBattleAboutToStart listener). Mark that as done so the
+	# imported settings survive the first game.
 	Set-CfgValue $local "FirstRun" "0"
 	$bindFile = Get-CfgValue $incoming "KeybindingFile"
 	if ($bindFile -and $bindFile -ne "uikeys.txt" -and (Test-Re $bindFile $script:BindFileRe) -and $bundle.Files.Contains($bindFile)) {
@@ -627,7 +667,7 @@ function Import-Settings($rules) {
 	}
 
 	Big "DONE. Start Beyond All Reason; your settings and keybinds are in place." "Green"
-	Say ("  Changed your mind? Run RESTORE to put back the " + $backedUp + " file(s) from before this import.")
+	Say "  Changed your mind? Run RESTORE to put this install back the way it was before this import."
 }
 
 function Restore-Settings($rules) {
@@ -644,13 +684,27 @@ function Restore-Settings($rules) {
 		$pick = $backups[(Pick "Which one? (number, Enter = newest)" $backups.Count) - 1]
 	}
 	Big ("Restoring files from " + $pick.FullName)
-	$files = @(Get-ChildItem -LiteralPath $pick.FullName -Recurse -File)
-	foreach ($f in $files) {
-		$rel = $f.FullName.Substring($pick.FullName.Length + 1)
-		Copy-Into $f.FullName (Join-Path $data $rel)
+	$count = 0
+	foreach ($f in @(Get-ChildItem -LiteralPath $pick.FullName -Recurse -File)) {
+		$rel = $f.FullName.Substring($pick.FullName.Length + 1).Replace("\", "/")
+		if ($rel -eq $script:CreatedListName) { continue }
+		Write-BytesFile (Join-Path $data $rel) ([System.IO.File]::ReadAllBytes($f.FullName))
 		Say ("  restored " + $rel) "DarkGray"
+		$count++
 	}
-	Big ("DONE. " + $files.Count + " file(s) restored.") "Green"
+	$removed = 0
+	$createdList = Join-Path $pick.FullName $script:CreatedListName
+	if (Test-Path -LiteralPath $createdList -PathType Leaf) {
+		foreach ($rel in ((Read-TextFile $createdList) -split "`r?`n")) {
+			$target = Join-Path $data $rel
+			if ((Test-SafeRelativePath $rel) -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+				Remove-Item -LiteralPath $target -Force
+				Say ("  removed " + $rel + " (the import added it)") "DarkGray"
+				$removed++
+			}
+		}
+	}
+	Big ("DONE. " + $count + " file(s) restored, " + $removed + " removed.") "Green"
 }
 
 # ---------------------------------------------------------------------------

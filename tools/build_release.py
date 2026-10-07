@@ -1,50 +1,63 @@
-"""Build the per-OS release zips from the working copy.
+"""Build the per-OS release zips.
 
     python tools/build_release.py <version> <out-dir>
 
-Windows zip: bats + ps1 + rules + README. Linux zip: sh + py + rules + README with mode 0755
-on the scripts and LF line endings forced.
+Windows zip: bats + ps1 + rules + README, CRLF line endings.
+Linux zip: sh + py + rules + README, LF line endings, mode 0755 on the scripts.
+
+Output is reproducible: entry order, line endings, permissions and timestamps are fixed.
+Timestamps come from SOURCE_DATE_EPOCH, or else the last commit's time.
 """
 import os
+import subprocess
 import sys
 import time
 import zipfile
 
-repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-version = sys.argv[1]
-out = sys.argv[2]
-os.makedirs(out, exist_ok=True)
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-windows = [
+WINDOWS = [
     "EXPORT BAR settings.bat", "IMPORT BAR settings.bat", "RESTORE BAR settings.bat",
     "BAR Settings Transfer (menu).bat", "bar-settings-transfer.ps1", "transfer-rules.json", "README.md",
 ]
-linux = [
+LINUX = [
     "EXPORT-BAR-settings.sh", "IMPORT-BAR-settings.sh", "RESTORE-BAR-settings.sh",
     "BAR-Settings-Transfer-menu.sh", "bar-settings-transfer.py", "transfer-rules.json", "README.md",
 ]
 
 
-def add(z, name, data, mode):
-    info = zipfile.ZipInfo(name, date_time=time.localtime()[:6])
-    info.compress_type = zipfile.ZIP_DEFLATED
-    info.external_attr = (mode & 0xFFFF) << 16
-    z.writestr(info, data)
+def source_date():
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    if not epoch:
+        epoch = subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=REPO,
+                               capture_output=True, text=True, check=True).stdout.strip()
+    return time.gmtime(int(epoch))[:6]
 
 
-def build(zip_name, files, exec_exts, force_lf):
-    path = os.path.join(out, zip_name)
+def build(path, files, newline, exec_exts, date_time):
     with zipfile.ZipFile(path, "w") as z:
-        for f in files:
-            data = open(os.path.join(repo, f), "rb").read()
-            if force_lf and f.endswith((".sh", ".py", ".md", ".json")):
-                data = data.replace(b"\r\n", b"\n")
-            mode = 0o755 if f.endswith(exec_exts) else 0o644
-            add(z, f, data, mode)
+        for name in files:
+            with open(os.path.join(REPO, name), "rb") as f:
+                data = f.read().replace(b"\r\n", b"\n")
+            if newline == b"\r\n" and name.endswith((".bat", ".ps1")):
+                data = data.replace(b"\n", b"\r\n")
+            info = zipfile.ZipInfo(name, date_time=date_time)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3  # unix, so the mode below is honoured by unzip
+            info.external_attr = ((0o100755 if name.endswith(exec_exts) else 0o100644) & 0xFFFF) << 16
+            z.writestr(info, data)
     print(path, os.path.getsize(path), "bytes")
-    for i in zipfile.ZipFile(path).infolist():
-        print("   %6d  %s  %s" % (i.file_size, oct(i.external_attr >> 16), i.filename))
 
 
-build("bar-settings-transfer-%s-windows.zip" % version, windows, (".bat", ".ps1"), False)
-build("bar-settings-transfer-%s-linux.zip" % version, linux, (".sh", ".py"), True)
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    version, out = sys.argv[1], sys.argv[2]
+    os.makedirs(out, exist_ok=True)
+    date_time = source_date()
+    build(os.path.join(out, "bar-settings-transfer-%s-windows.zip" % version), WINDOWS, b"\r\n", (".bat", ".ps1"), date_time)
+    build(os.path.join(out, "bar-settings-transfer-%s-linux.zip" % version), LINUX, b"\n", (".sh", ".py"), date_time)
+
+
+if __name__ == "__main__":
+    main()
